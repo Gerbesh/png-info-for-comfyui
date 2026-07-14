@@ -17,6 +17,14 @@ Automatic1111 or ComfyUI and reuses them in an editable workflow.
 
 ## Installation
 
+From Comfy Registry / Manager:
+
+```powershell
+comfy node install png-info
+```
+
+Or clone the repository manually:
+
 Clone the repository into the `custom_nodes` folder of your ComfyUI installation:
 
 ```powershell
