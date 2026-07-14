@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "png-info"
-version = "0.1.1"
+version = "0.1.2"
 description = "Read A1111 and ComfyUI PNG metadata into reusable ComfyUI settings"
 readme = "README.md"
 requires-python = ">=3.10"
