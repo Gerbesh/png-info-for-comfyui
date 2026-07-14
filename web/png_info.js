@@ -4,6 +4,8 @@ import { api } from "../../scripts/api.js";
 const EXTENSION_NAME = "gerbesh.png-info-for-comfyui";
 const NODE_NAME = "PNGInfoForComfyUI";
 const BINDING_PROPERTY = "png_info_binding";
+const POWER_LORA_LOADER_TYPE = "Power Lora Loader (rgthree)";
+const LORA_OUTPUT_PATTERN = /^(lora|strength)_\d{2}$/;
 const REQUIRED_OUTPUTS = [
   "seed",
   "steps",
@@ -57,6 +59,77 @@ function bindingValue(data, outputName) {
   return data[outputName];
 }
 
+function isLoraOutput(outputName) {
+  return LORA_OUTPUT_PATTERN.test(outputName);
+}
+
+function connectedNodeIds(node) {
+  const ids = new Set();
+  for (const input of node?.inputs || []) {
+    const link = input.link != null ? app.graph.links[input.link] : null;
+    if (link) ids.add(link.origin_id);
+  }
+  for (const output of node?.outputs || []) {
+    for (const linkId of output.links || []) {
+      const link = app.graph.links[linkId];
+      if (link) ids.add(link.target_id);
+    }
+  }
+  return ids;
+}
+
+function findPowerLoraTarget(records) {
+  const candidates = (app.graph?._nodes || []).filter(
+    (candidate) => candidate.type === POWER_LORA_LOADER_TYPE,
+  );
+  if (!candidates.length) return null;
+
+  const branchIds = new Set(
+    ["seed", "positive_prompt", "negative_prompt"]
+      .map((name) => records[name]?.node_id)
+      .filter((id) => id != null),
+  );
+  const branchMatches = candidates.filter((candidate) =>
+    [...connectedNodeIds(candidate)].some((id) => branchIds.has(id)),
+  );
+  if (branchMatches.length === 1) return branchMatches[0];
+  if (branchMatches.length > 1) {
+    throw new Error("Multiple Power Lora Loaders are connected to the bound generation branch");
+  }
+  if (candidates.length === 1) return candidates[0];
+  throw new Error("Multiple Power Lora Loaders found; connect the intended one to the bound branch");
+}
+
+function setPowerLoraLoader(node, loras, warnings) {
+  if (typeof node?.addNewLoraWidget !== "function") {
+    warnings.push(`${node?.title || POWER_LORA_LOADER_TYPE}: incompatible rgthree version`);
+    return false;
+  }
+
+  let widgets = (node.widgets || []).filter((widget) => /^lora_\d+$/.test(widget.name));
+  while (widgets.length < 4) {
+    node.addNewLoraWidget();
+    widgets = (node.widgets || []).filter((widget) => /^lora_\d+$/.test(widget.name));
+  }
+
+  widgets.forEach((widget, index) => {
+    const lora = index < 4 ? loras[index] : null;
+    const enabled = Boolean(lora?.name && lora.name !== "None");
+    const strength = Number(lora?.strength ?? 1.0);
+    const previous = typeof widget.value === "object" && widget.value ? widget.value : {};
+    widget.value = {
+      ...previous,
+      on: enabled,
+      lora: enabled ? lora.name : previous.lora ?? null,
+      strength,
+      strengthTwo: previous.strengthTwo == null ? null : strength,
+    };
+    widget.callback?.(widget.value);
+  });
+  node.setDirtyCanvas?.(true, true);
+  return true;
+}
+
 function validateBindingTargets(records) {
   const errors = [];
   const groupedIds = (names) => new Set(names.map((name) => records[name]?.node_id));
@@ -83,7 +156,7 @@ function validateBindingTargets(records) {
       "lora_01", "strength_01", "lora_02", "strength_02",
       "lora_03", "strength_03", "lora_04", "strength_04",
     ],
-    ["Lora Loader Stack (rgthree)"],
+    ["Lora Loader Stack (rgthree)", POWER_LORA_LOADER_TYPE],
     "LoRA Stack",
   );
   checkGroup(["positive_prompt"], ["CLIPTextEncode"], "Positive prompt");
@@ -98,7 +171,7 @@ function validateBindingTargets(records) {
 function captureCurrentConnections(node) {
   const records = {};
   const linkIds = [];
-  for (const outputName of REQUIRED_OUTPUTS) {
+  for (const outputName of REQUIRED_OUTPUTS.filter((name) => !isLoraOutput(name))) {
     const slot = node.outputs?.findIndex((output) => output.name === outputName) ?? -1;
     const links = slot >= 0 ? node.outputs[slot]?.links || [] : [];
     if (links.length !== 1) {
@@ -114,6 +187,42 @@ function captureCurrentConnections(node) {
       node_type: target.type,
     };
     linkIds.push(links[0]);
+  }
+
+  const loraOutputs = REQUIRED_OUTPUTS.filter(isLoraOutput);
+  const loraConnections = loraOutputs.map((outputName) => {
+    const slot = node.outputs?.findIndex((output) => output.name === outputName) ?? -1;
+    return { outputName, links: slot >= 0 ? node.outputs[slot]?.links || [] : [] };
+  });
+  if (loraConnections.every(({ links }) => links.length === 0)) {
+    const target = findPowerLoraTarget(records);
+    if (!target) {
+      throw new Error("Connect all LoRA outputs to a LoRA Stack or add a Power Lora Loader to the branch");
+    }
+    for (const { outputName } of loraConnections) {
+      records[outputName] = {
+        node_id: target.id,
+        input_name: outputName,
+        node_type: target.type,
+        adapter: "power_lora",
+      };
+    }
+  } else {
+    for (const { outputName, links } of loraConnections) {
+      if (links.length !== 1) {
+        throw new Error(`LoRA output '${outputName}' must have exactly one connection`);
+      }
+      const link = app.graph.links[links[0]];
+      const target = link && app.graph.getNodeById(link.target_id);
+      const input = target?.inputs?.[link.target_slot];
+      if (!target || !input) throw new Error(`Cannot resolve target for '${outputName}'`);
+      records[outputName] = {
+        node_id: target.id,
+        input_name: input.widget?.name || input.name,
+        node_type: target.type,
+      };
+      linkIds.push(links[0]);
+    }
   }
 
   const errors = validateBindingTargets(records);
@@ -212,12 +321,20 @@ function applyToBoundNodes(node) {
   }
 
   const warnings = [];
+  const appliedPowerLoraNodes = new Set();
   app.graph.beforeChange?.();
   try {
     for (const [outputName, record] of Object.entries(binding.records)) {
       const target = app.graph.getNodeById(record.node_id);
       if (!target) {
         warnings.push(`${record.node_type} #${record.node_id} was deleted`);
+        continue;
+      }
+      if (record.adapter === "power_lora") {
+        if (!appliedPowerLoraNodes.has(target.id)) {
+          setPowerLoraLoader(target, data.loras || [], warnings);
+          appliedPowerLoraNodes.add(target.id);
+        }
         continue;
       }
       const value = bindingValue(data, outputName);

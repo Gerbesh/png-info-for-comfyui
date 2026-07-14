@@ -10,8 +10,8 @@ Automatic1111 or ComfyUI and reuses them in an editable workflow.
   and negative prompts.
 - Extracts up to four enabled LoRAs and their strengths.
 - Resolves checkpoint and LoRA names against files installed in ComfyUI.
-- Provides typed outputs compatible with core KSampler/Checkpoint nodes and
-  `Lora Loader Stack (rgthree)`.
+- Provides typed outputs compatible with core KSampler/Checkpoint nodes,
+  `Lora Loader Stack (rgthree)`, and `Power Lora Loader (rgthree)`.
 - Remembers a complete five-node target set, removes the temporary data links,
   and keeps every destination widget editable.
 
@@ -38,15 +38,22 @@ Restart ComfyUI, then add **PNG Info for ComfyUI** from the `PNG Info` category.
 
 1. Add a `PNG Info for ComfyUI` node and choose or upload a PNG.
 2. Build a normal generation branch containing a core `KSampler`,
-   `CheckpointLoaderSimple`, positive/negative `CLIPTextEncode` nodes and,
-   `Lora Loader Stack (rgthree)`.
-3. Temporarily connect all 17 value outputs from PNG Info: six sampler values,
-   checkpoint, four LoRA/strength pairs, and two prompts.
+   `CheckpointLoaderSimple`, positive/negative `CLIPTextEncode` nodes, and an
+   rgthree LoRA loader.
+3. For `Lora Loader Stack (rgthree)`, temporarily connect all 17 value outputs:
+   six sampler values, checkpoint, four LoRA/strength pairs, and two prompts.
+   For `Power Lora Loader (rgthree)`, leave the eight LoRA outputs disconnected;
+   the plugin finds the loader connected to the bound KSampler/CLIP branch.
 4. Click **Bind all connected nodes & detach**. The node stores the five target
    node IDs in the workflow, removes all temporary links and immediately applies
    the current PNG metadata.
 5. Edit any populated widget normally. For another PNG, choose the file and
    click **Apply to bound nodes**; no reconnection is needed.
+
+When applying to Power Lora Loader, the first four rows are populated and
+enabled from the PNG metadata. Missing and additional existing rows are disabled
+so stale LoRAs do not affect the generation. Separate model/CLIP strength mode
+receives the same parsed strength for both values.
 
 Use **Clear binding** before wiring a different target set. If a bound target
 node is deleted, Apply reports its type and ID instead of writing elsewhere.
