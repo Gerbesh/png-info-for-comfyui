@@ -16,6 +16,7 @@ env/
 .ruff_cache/
 .coverage
 htmlcov/
+.tox/
 
 # Packaging
 build/
