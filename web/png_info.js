@@ -130,6 +130,37 @@ function setPowerLoraLoader(node, loras, warnings) {
   return true;
 }
 
+function migrateMissingLoraBindingToPower(binding, warnings) {
+  const loraOutputs = REQUIRED_OUTPUTS.filter(isLoraOutput);
+  const loraRecords = loraOutputs.map((name) => binding.records[name]).filter(Boolean);
+  if (loraRecords.some((record) => record.adapter === "power_lora")) return;
+
+  const hasLiveLoraStack = loraRecords.some((record) => {
+    const target = app.graph.getNodeById(record.node_id);
+    return target?.type === "Lora Loader Stack (rgthree)";
+  });
+  if (hasLiveLoraStack) return;
+
+  let target;
+  try {
+    target = findPowerLoraTarget(binding.records);
+  } catch (error) {
+    warnings.push(error.message || String(error));
+    return;
+  }
+  if (!target) return;
+
+  for (const outputName of loraOutputs) {
+    binding.records[outputName] = {
+      node_id: target.id,
+      input_name: outputName,
+      node_type: target.type,
+      adapter: "power_lora",
+    };
+  }
+  binding.version = 2;
+}
+
 function validateBindingTargets(records) {
   const errors = [];
   const groupedIds = (names) => new Set(names.map((name) => records[name]?.node_id));
@@ -256,7 +287,7 @@ function bindAndDetach(node) {
   try {
     node.properties ||= {};
     node.properties[BINDING_PROPERTY] = {
-      version: 1,
+      version: 2,
       records: captured.records,
     };
     for (const linkId of captured.linkIds) app.graph.removeLink(linkId);
@@ -324,6 +355,7 @@ function applyToBoundNodes(node) {
   const appliedPowerLoraNodes = new Set();
   app.graph.beforeChange?.();
   try {
+    migrateMissingLoraBindingToPower(binding, warnings);
     for (const [outputName, record] of Object.entries(binding.records)) {
       const target = app.graph.getNodeById(record.node_id);
       if (!target) {

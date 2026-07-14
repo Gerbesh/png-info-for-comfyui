@@ -57,6 +57,8 @@ receives the same parsed strength for both values.
 
 Use **Clear binding** before wiring a different target set. If a bound target
 node is deleted, Apply reports its type and ID instead of writing elsewhere.
+Saved bindings that still point to a removed rgthree LoRA Stack are automatically
+migrated to the Power Lora Loader connected to the bound generation branch.
 
 The node also exposes live outputs:
 
