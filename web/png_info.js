@@ -3,7 +3,11 @@ import { api } from "../../scripts/api.js";
 
 const EXTENSION_NAME = "gerbesh.png-info-for-comfyui";
 const NODE_NAME = "PNGInfoForComfyUI";
+const QUICK_NODE_NAME = "PNGInfoQuickApply";
 const BINDING_PROPERTY = "png_info_binding";
+const CONTROLLER_PROPERTY = "png_info_controller_id";
+const QUICK_IMAGE_PROPERTY = "png_info_image";
+const QUICK_TITLE = "PNG Info — Быстро";
 const POWER_LORA_LOADER_TYPE = "Power Lora Loader (rgthree)";
 const LORA_OUTPUT_PATTERN = /^(lora|strength)_\d{2}$/;
 const REQUIRED_OUTPUTS = [
@@ -64,6 +68,25 @@ function updateStatus(node, value) {
   if (node?.__pngInfoHostStatus) node.__pngInfoHostStatus.value = value;
   node?.setDirtyCanvas?.(true, true);
   node?.__pngInfoSubgraphHost?.setDirtyCanvas?.(true, true);
+}
+
+function newControllerId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `png-info-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function ensureControllerId(node) {
+  node.properties ||= {};
+  if (!node.properties[CONTROLLER_PROPERTY]) {
+    node.properties[CONTROLLER_PROPERTY] = newControllerId();
+    app.graph.change?.();
+  }
+  return node.properties[CONTROLLER_PROPERTY];
+}
+
+function setQuickTitle(node, suffix = "") {
+  node.title = suffix ? `${QUICK_TITLE} — ${suffix}` : QUICK_TITLE;
+  node.setDirtyCanvas?.(true, true);
 }
 
 function setWidget(node, name, value, warnings) {
@@ -387,13 +410,13 @@ function applyToBoundNodes(node) {
   const data = node.__pngInfoData;
   if (!data) {
     updateStatus(node, "Load a supported PNG before applying settings");
-    return;
+    return false;
   }
 
   const binding = node.properties?.[BINDING_PROPERTY];
   if (!binding?.records) {
     updateStatus(node, "Connect all 17 value outputs, then press Bind & detach");
-    return;
+    return false;
   }
 
   const warnings = [];
@@ -427,6 +450,98 @@ function applyToBoundNodes(node) {
     app.canvas.setDirty?.(true, true);
   }
   updateStatus(node, statusText(data, warnings));
+  return true;
+}
+
+function configuredControllers() {
+  const controllers = [];
+  walkGraph(app.graph, (node) => {
+    if (node.type === NODE_NAME && node.properties?.[BINDING_PROPERTY]?.records) {
+      ensureControllerId(node);
+      controllers.push(node);
+    }
+  });
+  return controllers;
+}
+
+function resolveQuickController(node) {
+  const controllers = configuredControllers();
+  const savedId = node.properties?.[CONTROLLER_PROPERTY];
+  const saved = savedId
+    ? controllers.find((candidate) => candidate.properties?.[CONTROLLER_PROPERTY] === savedId)
+    : null;
+  if (saved) return saved;
+  if (controllers.length === 1) {
+    node.properties ||= {};
+    node.properties[CONTROLLER_PROPERTY] = ensureControllerId(controllers[0]);
+    app.graph.change?.();
+    return controllers[0];
+  }
+  if (!controllers.length) {
+    throw new Error("сначала настройте основную PNG-ноду");
+  }
+  throw new Error("найдено несколько настроенных PNG-нод");
+}
+
+async function loadQuickMetadata(node) {
+  const image = node.properties?.[QUICK_IMAGE_PROPERTY];
+  if (!image) throw new Error("сначала загрузите картинку");
+  setQuickTitle(node, "читаем PNG…");
+  const response = await api.fetchApi(
+    `/png-info-for-comfyui/parse?image=${encodeURIComponent(image)}`,
+  );
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  node.__pngInfoData = payload;
+  setQuickTitle(node, "готово");
+  return payload;
+}
+
+async function chooseQuickImage(node) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/png,.png";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    setQuickTitle(node, "загрузка…");
+    try {
+      const form = new FormData();
+      form.append("image", file);
+      form.append("type", "input");
+      form.append("overwrite", "true");
+      const response = await api.fetchApi("/upload/image", { method: "POST", body: form });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      const relativeName = payload.subfolder
+        ? `${payload.subfolder}/${payload.name}`
+        : payload.name;
+      const image = payload.type && payload.type !== "input"
+        ? `${relativeName} [${payload.type}]`
+        : relativeName;
+      node.properties ||= {};
+      node.properties[QUICK_IMAGE_PROPERTY] = image;
+      node.__pngInfoData = null;
+      app.graph.change?.();
+      await loadQuickMetadata(node);
+    } catch (error) {
+      node.__pngInfoData = null;
+      setQuickTitle(node, `ошибка: ${error.message || error}`);
+    }
+  };
+  input.click();
+}
+
+async function applyQuickImage(node) {
+  try {
+    const data = node.__pngInfoData || await loadQuickMetadata(node);
+    const controller = resolveQuickController(node);
+    controller.__pngInfoData = data;
+    const applied = applyToBoundNodes(controller);
+    setQuickTitle(node, applied ? "применено" : "не применено");
+  } catch (error) {
+    setQuickTitle(node, `ошибка: ${error.message || error}`);
+  }
 }
 
 function bridgePngInfoSubgraph(hostNode) {
@@ -473,6 +588,32 @@ app.registerExtension({
   },
 
   async beforeRegisterNodeDef(nodeType, nodeData) {
+    if (nodeData.name === QUICK_NODE_NAME) {
+      const originalCreated = nodeType.prototype.onNodeCreated;
+      nodeType.prototype.onNodeCreated = function (...args) {
+        const result = originalCreated?.apply(this, args);
+        setQuickTitle(this);
+        const upload = this.addWidget("button", "Загрузить картинку", null, () => {
+          chooseQuickImage(this);
+        });
+        upload.serialize = false;
+        const apply = this.addWidget("button", "Применить PNG", null, () => {
+          applyQuickImage(this);
+        });
+        apply.serialize = false;
+        this.setSize([260, 92]);
+        window.setTimeout(() => {
+          if (this.properties?.[QUICK_IMAGE_PROPERTY]) {
+            loadQuickMetadata(this).catch((error) => {
+              setQuickTitle(this, `ошибка: ${error.message || error}`);
+            });
+          }
+        }, 0);
+        return result;
+      };
+      return;
+    }
+
     if (nodeData.name !== NODE_NAME) return;
 
     const originalCreated = nodeType.prototype.onNodeCreated;
@@ -508,6 +649,7 @@ app.registerExtension({
       this.setSize([Math.max(this.size[0], 380), Math.max(this.size[1], 230)]);
 
       window.setTimeout(() => {
+        ensureControllerId(this);
         refreshMetadata(this);
         const binding = this.properties?.[BINDING_PROPERTY];
         if (binding?.records) {

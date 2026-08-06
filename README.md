@@ -19,6 +19,8 @@ Automatic1111 or ComfyUI and reuses them in an editable workflow.
 - Resolves saved binding targets recursively across nested subgraphs.
 - Accepts promoted subgraph widgets (for example `ckpt_name`) as binding
   targets instead of requiring the loader node to be directly exposed.
+- Includes a compact companion node with only **Загрузить картинку** and
+  **Применить PNG** buttons for everyday use of a saved binding.
 
 ## Installation
 
@@ -64,6 +66,12 @@ Use **Clear binding** before wiring a different target set. If a bound target
 node is deleted, Apply reports its type and ID instead of writing elsewhere.
 Saved bindings that still point to a removed rgthree LoRA Stack are automatically
 migrated to the Power Lora Loader connected to the bound generation branch.
+
+For a simplified workflow, keep one configured `PNG Info for ComfyUI` node in
+the graph and add `PNG Info — Быстрое применение`. The compact node uploads and
+parses the PNG, then applies it through that saved configuration. If the graph
+contains several configured main nodes, the compact node refuses to guess which
+one to use.
 
 The node also exposes live outputs:
 

@@ -6,11 +6,17 @@ WEB_DIRECTORY = "./web"
 # a top-level ``__init__`` module when the checkout directory contains spaces;
 # keep that collection-time import free from ComfyUI-only dependencies.
 if __package__:
-    from .png_info_node import PNGInfoForComfyUI
+    from .png_info_node import PNGInfoForComfyUI, PNGInfoQuickApply
     from . import routes as _routes  # noqa: F401 - registers the HTTP route
 
-    NODE_CLASS_MAPPINGS = {"PNGInfoForComfyUI": PNGInfoForComfyUI}
-    NODE_DISPLAY_NAME_MAPPINGS = {"PNGInfoForComfyUI": "PNG Info for ComfyUI"}
+    NODE_CLASS_MAPPINGS = {
+        "PNGInfoForComfyUI": PNGInfoForComfyUI,
+        "PNGInfoQuickApply": PNGInfoQuickApply,
+    }
+    NODE_DISPLAY_NAME_MAPPINGS = {
+        "PNGInfoForComfyUI": "PNG Info for ComfyUI",
+        "PNGInfoQuickApply": "PNG Info — Быстрое применение",
+    }
 else:  # pragma: no cover - only used by external test collectors
     NODE_CLASS_MAPPINGS = {}
     NODE_DISPLAY_NAME_MAPPINGS = {}

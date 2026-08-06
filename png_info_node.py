@@ -160,6 +160,26 @@ class PNGInfoForComfyUI:
         return True
 
 
+class PNGInfoQuickApply:
+    """Compact frontend-only companion for a configured PNG Info node."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {}}
+
+    RETURN_TYPES = ()
+    FUNCTION = "noop"
+    OUTPUT_NODE = True
+    CATEGORY = "PNG Info"
+    DESCRIPTION = (
+        "Uploads a PNG and applies its metadata through the binding stored in "
+        "a PNG Info for ComfyUI node. Configuration stays in the main node."
+    )
+
+    def noop(self):
+        return ()
+
+
 def _status_text(source_format: str, warnings: list[str]) -> str:
     if warnings:
         return f"{source_format}: " + " | ".join(warnings)
