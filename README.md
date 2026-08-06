@@ -14,6 +14,11 @@ Automatic1111 or ComfyUI and reuses them in an editable workflow.
   `Lora Loader Stack (rgthree)`, and `Power Lora Loader (rgthree)`.
 - Remembers a complete five-node target set, removes the temporary data links,
   and keeps every destination widget editable.
+- Restores Upload/Apply controls when the PNG Info node is promoted through a
+  ComfyUI subgraph, including workflows saved before frontend 1.47.
+- Resolves saved binding targets recursively across nested subgraphs.
+- Accepts promoted subgraph widgets (for example `ckpt_name`) as binding
+  targets instead of requiring the loader node to be directly exposed.
 
 ## Installation
 

@@ -30,6 +30,42 @@ function findWidget(node, name) {
   return node?.widgets?.find((widget) => widget.name === name) ?? null;
 }
 
+function graphNodes(graph) {
+  return graph?.nodes ?? graph?._nodes ?? [];
+}
+
+function nodeById(graph, id) {
+  return graph?.getNodeById?.(id) ?? graphNodes(graph).find((node) => node.id === id) ?? null;
+}
+
+function walkGraph(graph, callback) {
+  for (const node of graphNodes(graph)) {
+    callback(node, graph);
+    if (node.subgraph) walkGraph(node.subgraph, callback);
+  }
+}
+
+function findNodeInAllGraphs(id, expectedType = null) {
+  const matches = [];
+  walkGraph(app.graph, (node) => {
+    if (node.id === id && (!expectedType || node.type === expectedType)) matches.push(node);
+  });
+  if (matches.length === 1) return matches[0];
+  if (!matches.length && expectedType) {
+    walkGraph(app.graph, (node) => {
+      if (node.id === id) matches.push(node);
+    });
+  }
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function updateStatus(node, value) {
+  if (node?.__pngInfoStatus) node.__pngInfoStatus.value = value;
+  if (node?.__pngInfoHostStatus) node.__pngInfoHostStatus.value = value;
+  node?.setDirtyCanvas?.(true, true);
+  node?.__pngInfoSubgraphHost?.setDirtyCanvas?.(true, true);
+}
+
 function setWidget(node, name, value, warnings) {
   const widget = findWidget(node, name);
   if (!widget) {
@@ -65,13 +101,14 @@ function isLoraOutput(outputName) {
 
 function connectedNodeIds(node) {
   const ids = new Set();
+  const graph = node?.graph ?? app.graph;
   for (const input of node?.inputs || []) {
-    const link = input.link != null ? app.graph.links[input.link] : null;
+    const link = input.link != null ? graph?.links?.[input.link] : null;
     if (link) ids.add(link.origin_id);
   }
   for (const output of node?.outputs || []) {
     for (const linkId of output.links || []) {
-      const link = app.graph.links[linkId];
+      const link = graph?.links?.[linkId];
       if (link) ids.add(link.target_id);
     }
   }
@@ -79,9 +116,10 @@ function connectedNodeIds(node) {
 }
 
 function findPowerLoraTarget(records) {
-  const candidates = (app.graph?._nodes || []).filter(
-    (candidate) => candidate.type === POWER_LORA_LOADER_TYPE,
-  );
+  const candidates = [];
+  walkGraph(app.graph, (candidate) => {
+    if (candidate.type === POWER_LORA_LOADER_TYPE) candidates.push(candidate);
+  });
   if (!candidates.length) return null;
 
   const branchIds = new Set(
@@ -136,7 +174,7 @@ function migrateMissingLoraBindingToPower(binding, warnings) {
   if (loraRecords.some((record) => record.adapter === "power_lora")) return;
 
   const hasLiveLoraStack = loraRecords.some((record) => {
-    const target = app.graph.getNodeById(record.node_id);
+    const target = findNodeInAllGraphs(record.node_id, record.node_type);
     return target?.type === "Lora Loader Stack (rgthree)";
   });
   if (hasLiveLoraStack) return;
@@ -170,8 +208,13 @@ function validateBindingTargets(records) {
       errors.push(`${label} outputs must connect to one node`);
       return;
     }
-    const target = app.graph.getNodeById([...ids][0]);
-    if (!target || !expectedTypes.includes(target.type)) {
+    const record = records[names[0]];
+    const target = findNodeInAllGraphs([...ids][0], record?.node_type);
+    const hasPromotedWidgets = Boolean(target) && names.every((name) => {
+      const inputName = records[name]?.input_name;
+      return inputName && findWidget(target, inputName);
+    });
+    if (!target || (!expectedTypes.includes(target.type) && !hasPromotedWidgets)) {
       errors.push(`${label} has an unsupported target node`);
     }
   };
@@ -202,14 +245,15 @@ function validateBindingTargets(records) {
 function captureCurrentConnections(node) {
   const records = {};
   const linkIds = [];
+  const graph = node?.graph ?? app.graph;
   for (const outputName of REQUIRED_OUTPUTS.filter((name) => !isLoraOutput(name))) {
     const slot = node.outputs?.findIndex((output) => output.name === outputName) ?? -1;
     const links = slot >= 0 ? node.outputs[slot]?.links || [] : [];
     if (links.length !== 1) {
       throw new Error(`Output '${outputName}' must have exactly one connection`);
     }
-    const link = app.graph.links[links[0]];
-    const target = link && app.graph.getNodeById(link.target_id);
+    const link = graph?.links?.[links[0]];
+    const target = link && nodeById(graph, link.target_id);
     const input = target?.inputs?.[link.target_slot];
     if (!target || !input) throw new Error(`Cannot resolve target for '${outputName}'`);
     records[outputName] = {
@@ -243,8 +287,8 @@ function captureCurrentConnections(node) {
       if (links.length !== 1) {
         throw new Error(`LoRA output '${outputName}' must have exactly one connection`);
       }
-      const link = app.graph.links[links[0]];
-      const target = link && app.graph.getNodeById(link.target_id);
+      const link = graph?.links?.[links[0]];
+      const target = link && nodeById(graph, link.target_id);
       const input = target?.inputs?.[link.target_slot];
       if (!target || !input) throw new Error(`Cannot resolve target for '${outputName}'`);
       records[outputName] = {
@@ -279,7 +323,7 @@ function bindAndDetach(node) {
   try {
     captured = captureCurrentConnections(node);
   } catch (error) {
-    node.__pngInfoStatus.value = `Binding error: ${error.message || error}`;
+    updateStatus(node, `Binding error: ${error.message || error}`);
     return;
   }
 
@@ -297,13 +341,13 @@ function bindAndDetach(node) {
     app.canvas.setDirty?.(true, true);
   }
 
-  node.__pngInfoStatus.value = `Bound and detached\n${bindingSummary(node.properties[BINDING_PROPERTY])}`;
+  updateStatus(node, `Bound and detached\n${bindingSummary(node.properties[BINDING_PROPERTY])}`);
   window.setTimeout(() => applyToBoundNodes(node), 0);
 }
 
 function clearBinding(node) {
   if (node.properties) delete node.properties[BINDING_PROPERTY];
-  node.__pngInfoStatus.value = "Binding cleared; connect all outputs to bind again";
+  updateStatus(node, "Binding cleared; connect all outputs to bind again");
   app.graph.change?.();
   app.canvas.setDirty?.(true, true);
 }
@@ -316,13 +360,12 @@ function statusText(data, applyWarnings = []) {
 
 async function refreshMetadata(node) {
   const imageWidget = findWidget(node, "image");
-  const status = node.__pngInfoStatus;
   if (!imageWidget?.value) {
-    if (status) status.value = "Choose a PNG with A1111 or ComfyUI metadata";
+    updateStatus(node, "Choose a PNG with A1111 or ComfyUI metadata");
     return;
   }
 
-  if (status) status.value = "Reading metadata…";
+  updateStatus(node, "Reading metadata…");
   try {
     const response = await api.fetchApi(
       `/png-info-for-comfyui/parse?image=${encodeURIComponent(imageWidget.value)}`,
@@ -330,24 +373,26 @@ async function refreshMetadata(node) {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
     node.__pngInfoData = payload;
-    if (status) status.value = statusText(payload);
+    updateStatus(node, statusText(payload));
+    if (node.__pngInfoAutoApply && node.properties?.[BINDING_PROPERTY]?.records) {
+      applyToBoundNodes(node);
+    }
   } catch (error) {
     node.__pngInfoData = null;
-    if (status) status.value = `Error: ${error.message || error}`;
+    updateStatus(node, `Error: ${error.message || error}`);
   }
-  node.setDirtyCanvas?.(true, true);
 }
 
 function applyToBoundNodes(node) {
   const data = node.__pngInfoData;
   if (!data) {
-    node.__pngInfoStatus.value = "Load a supported PNG before applying settings";
+    updateStatus(node, "Load a supported PNG before applying settings");
     return;
   }
 
   const binding = node.properties?.[BINDING_PROPERTY];
   if (!binding?.records) {
-    node.__pngInfoStatus.value = "Connect all 17 value outputs, then press Bind & detach";
+    updateStatus(node, "Connect all 17 value outputs, then press Bind & detach");
     return;
   }
 
@@ -357,7 +402,7 @@ function applyToBoundNodes(node) {
   try {
     migrateMissingLoraBindingToPower(binding, warnings);
     for (const [outputName, record] of Object.entries(binding.records)) {
-      const target = app.graph.getNodeById(record.node_id);
+      const target = findNodeInAllGraphs(record.node_id, record.node_type);
       if (!target) {
         warnings.push(`${record.node_type} #${record.node_id} was deleted`);
         continue;
@@ -381,11 +426,51 @@ function applyToBoundNodes(node) {
     app.graph.change?.();
     app.canvas.setDirty?.(true, true);
   }
-  node.__pngInfoStatus.value = statusText(data, warnings);
+  updateStatus(node, statusText(data, warnings));
+}
+
+function bridgePngInfoSubgraph(hostNode) {
+  if (!hostNode?.subgraph) return;
+  const pngNode = graphNodes(hostNode.subgraph).find((node) => node.type === NODE_NAME);
+  if (!pngNode) return;
+
+  pngNode.__pngInfoSubgraphHost = hostNode;
+  pngNode.__pngInfoAutoApply = true;
+
+  const hostUpload = findWidget(hostNode, "upload");
+  const innerUpload = findWidget(pngNode, "upload");
+  if (hostUpload && innerUpload?.callback && !hostUpload.__pngInfoBridge) {
+    hostUpload.__pngInfoBridge = true;
+    hostUpload.callback = (...args) => innerUpload.callback?.apply(innerUpload, args);
+  }
+
+  let hostStatus = findWidget(hostNode, "PNG Info status");
+  if (!hostStatus) {
+    hostStatus = hostNode.addWidget(
+      "text",
+      "PNG Info status",
+      "Choose or upload a PNG",
+      () => {},
+      { multiline: true },
+    );
+    hostStatus.serialize = false;
+  }
+  pngNode.__pngInfoHostStatus = hostStatus;
+
+  if (!findWidget(hostNode, "Apply PNG settings")) {
+    const applyWidget = hostNode.addWidget("button", "Apply PNG settings", null, () => {
+      applyToBoundNodes(pngNode);
+    });
+    applyWidget.serialize = false;
+  }
 }
 
 app.registerExtension({
   name: EXTENSION_NAME,
+
+  async afterConfigureGraph() {
+    walkGraph(app.graph, (node) => bridgePngInfoSubgraph(node));
+  },
 
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== NODE_NAME) return;
